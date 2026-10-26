@@ -140,6 +140,7 @@ int main(int argc, char *argv[])
     QCommandLineOption maxFpsOpt("max-fps", "Max frame rate", "fps", "0");
     QCommandLineOption noReverseOpt("no-reverse", "Do not use adb reverse");
     QCommandLineOption closeScreenOpt("close-screen", "Close device screen when mirroring");
+    QCommandLineOption stayAwakeOpt("stay-awake", "Keep device screen awake");
 
     parser.addOption(serialOpt);
     parser.addOption(titleOpt);
@@ -155,6 +156,7 @@ int main(int argc, char *argv[])
     parser.addOption(maxFpsOpt);
     parser.addOption(noReverseOpt);
     parser.addOption(closeScreenOpt);
+    parser.addOption(stayAwakeOpt);
 
     parser.process(a);
 
