@@ -10,7 +10,16 @@ GroupController::GroupController(QObject *parent) : QObject(parent)
 
 bool GroupController::isHost(const QString &serial)
 {
-    auto data = qsc::IDeviceManage::getInstance().getDevice(serial)->getUserData();
+    if (m_deviceRoles.contains(serial)) {
+        return m_deviceRoles.value(serial) == "master";
+    }
+
+    auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+    if (!device) {
+        return true;
+    }
+
+    auto data = device->getUserData();
     if (!data) {
         return true;
     }
@@ -20,7 +29,12 @@ bool GroupController::isHost(const QString &serial)
 
 QSize GroupController::getFrameSize(const QString &serial)
 {
-    auto data = qsc::IDeviceManage::getInstance().getDevice(serial)->getUserData();
+    auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+    if (!device) {
+        return QSize();
+    }
+
+    auto data = device->getUserData();
     if (!data) {
         return QSize();
     }
@@ -63,6 +77,8 @@ void GroupController::addDevice(const QString &serial)
 
 void GroupController::removeDevice(const QString &serial)
 {
+    m_deviceRoles.remove(serial);
+
     if (!m_devices.contains(serial)) {
         return;
     }
@@ -77,6 +93,34 @@ void GroupController::removeDevice(const QString &serial)
     if (isHost(serial)) {
         device->deRegisterDeviceObserver(this);
     }
+}
+
+void GroupController::setDeviceRole(const QString &serial, const QString &role)
+{
+    QString normalizedRole = role.trimmed().toLower();
+    m_deviceRoles[serial] = normalizedRole;
+
+    if (normalizedRole == "independent") {
+        if (m_devices.contains(serial)) {
+            m_devices.removeOne(serial);
+        }
+        auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+        if (device) {
+            device->deRegisterDeviceObserver(this);
+        }
+        return;
+    }
+
+    if (!m_devices.contains(serial)) {
+        m_devices.append(serial);
+    }
+
+    updateDeviceState(serial);
+}
+
+QString GroupController::getDeviceRole(const QString &serial) const
+{
+    return m_deviceRoles.value(serial, QStringLiteral("slave"));
 }
 
 void GroupController::mouseEvent(const QMouseEvent *from, const QSize &frameSize, const QSize &showSize)

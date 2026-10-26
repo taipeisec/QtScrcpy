@@ -283,9 +283,7 @@ int main(int argc, char *argv[])
             videoForm->show();
 #endif
 
-            if (role != "independent") {
-                GroupController::instance().addDevice(serial);
-            }
+            GroupController::instance().setDeviceRole(serial, role);
         });
 
         QObject::connect(&qsc::IDeviceManage::getInstance(), &qsc::IDeviceManage::deviceDisconnected,

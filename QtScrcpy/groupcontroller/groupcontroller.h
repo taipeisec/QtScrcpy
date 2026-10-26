@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QVector>
+#include <QMap>
 
 #include "QtScrcpyCore.h"
 
@@ -15,6 +16,8 @@ public:
     void updateDeviceState(const QString& serial);
     void addDevice(const QString& serial);
     void removeDevice(const QString& serial);
+    void setDeviceRole(const QString& serial, const QString& role);
+    QString getDeviceRole(const QString& serial) const;
 
 private:
     // DeviceObserver
@@ -54,6 +57,7 @@ private:
 
 private:
     QVector<QString> m_devices;
+    QMap<QString, QString> m_deviceRoles;
 };
 
 #endif // GROUPCONTROLLER_H
