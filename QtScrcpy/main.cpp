@@ -1,4 +1,4 @@
-﻿#include <QApplication>
+#include <QApplication>
 #include <QColor>
 #include <QDebug>
 #include <QDir>
@@ -18,6 +18,12 @@
 #include "dialog.h"
 #include "mousetap/mousetap.h"
 #include "singleinstance.h"
+#include "ui/videoform.h"
+#include "groupcontroller/groupcontroller.h"
+
+#include <QCommandLineParser>
+#include <QCommandLineOption>
+#include <QRandomGenerator>
 
 static Dialog *g_mainDlg = Q_NULLPTR;
 static QtMessageHandler g_oldMessageHandler = Q_NULLPTR;
@@ -114,9 +120,54 @@ int main(int argc, char *argv[])
     g_oldMessageHandler = qInstallMessageHandler(myMessageOutput);
     QApplication a(argc, argv);
 
-    // Only one QtScrcpy per user. If one is already running (possibly hidden in
-    // the system tray), ask it to show its window and exit.
-    SingleInstance singleInstance(QStringLiteral("QtScrcpy"));
+    // Parse command line arguments
+    QCommandLineParser parser;
+    parser.setApplicationDescription("QtScrcpy Display & Control Engine");
+    parser.addHelpOption();
+    parser.addVersionOption();
+
+    QCommandLineOption serialOpt(QStringList() << "s" << "serial", "Target device serial number", "serial");
+    QCommandLineOption titleOpt("window-title", "Custom window title", "title");
+    QCommandLineOption xOpt("window-x", "Window X position", "x");
+    QCommandLineOption yOpt("window-y", "Window Y position", "y");
+    QCommandLineOption wOpt("window-width", "Window width", "width");
+    QCommandLineOption hOpt("window-height", "Window height", "height");
+    QCommandLineOption roleOpt("role", "Device role: master, slave, independent", "role", "independent");
+    QCommandLineOption framelessOpt("frameless", "Enable frameless window");
+    QCommandLineOption alwaysTopOpt(QStringList() << "stay-on-top" << "always-top", "Stay on top");
+    QCommandLineOption maxSizeOpt("max-size", "Max video size", "size", "0");
+    QCommandLineOption bitRateOpt(QStringList() << "b" << "bit-rate", "Video bitrate in bps", "bitrate", "4000000");
+    QCommandLineOption maxFpsOpt("max-fps", "Max frame rate", "fps", "0");
+    QCommandLineOption noReverseOpt("no-reverse", "Do not use adb reverse");
+    QCommandLineOption closeScreenOpt("close-screen", "Close device screen when mirroring");
+
+    parser.addOption(serialOpt);
+    parser.addOption(titleOpt);
+    parser.addOption(xOpt);
+    parser.addOption(yOpt);
+    parser.addOption(wOpt);
+    parser.addOption(hOpt);
+    parser.addOption(roleOpt);
+    parser.addOption(framelessOpt);
+    parser.addOption(alwaysTopOpt);
+    parser.addOption(maxSizeOpt);
+    parser.addOption(bitRateOpt);
+    parser.addOption(maxFpsOpt);
+    parser.addOption(noReverseOpt);
+    parser.addOption(closeScreenOpt);
+
+    parser.process(a);
+
+    const QString cliSerial = parser.value(serialOpt).trimmed();
+    const bool isCli = !cliSerial.isEmpty();
+
+    // Isolated single instance per serial in CLI mode, or global in GUI mode
+    QString instanceKey = QStringLiteral("QtScrcpy");
+    if (isCli) {
+        instanceKey += QStringLiteral("_") + cliSerial;
+    }
+
+    SingleInstance singleInstance(instanceKey);
     if (!singleInstance.isPrimary()) {
         singleInstance.notifyPrimary();
         return 0;
@@ -172,27 +223,125 @@ int main(int argc, char *argv[])
 
     qsc::AdbProcess::setAdbPath(Config::getInstance().getAdbPath());
 
-    g_mainDlg = new Dialog {};
-    g_mainDlg->show();
-    QObject::connect(&singleInstance, &SingleInstance::activateRequested, g_mainDlg, &Dialog::bringToFront);
+    if (isCli) {
+        QString serverLocalPath = QString::fromLocal8Bit(qgetenv("QTSCRCPY_SERVER_PATH"));
+        QFileInfo serverInfo(serverLocalPath);
+        if (serverLocalPath.isEmpty() || !serverInfo.isFile()) {
+            serverLocalPath = QCoreApplication::applicationDirPath() + "/scrcpy-server";
+        }
+
+        int winX = parser.isSet(xOpt) ? parser.value(xOpt).toInt() : -1;
+        int winY = parser.isSet(yOpt) ? parser.value(yOpt).toInt() : -1;
+        int winW = parser.isSet(wOpt) ? parser.value(wOpt).toInt() : -1;
+        int winH = parser.isSet(hOpt) ? parser.value(hOpt).toInt() : -1;
+        QString winTitle = parser.value(titleOpt);
+        QString role = parser.value(roleOpt).toLower();
+        bool frameless = parser.isSet(framelessOpt);
+        bool stayOnTop = parser.isSet(alwaysTopOpt);
+
+        QObject::connect(&qsc::IDeviceManage::getInstance(), &qsc::IDeviceManage::deviceConnected,
+                &a, [cliSerial, winTitle, winX, winY, winW, winH, role, frameless, stayOnTop](bool success, const QString &serial, const QString &deviceName, const QSize &size) {
+            Q_UNUSED(deviceName);
+            if (serial != cliSerial) return;
+            if (!success) {
+                qCritical() << "[CLI] Failed to connect device:" << serial;
+                qApp->exit(1);
+                return;
+            }
+
+            auto videoForm = new VideoForm(frameless, Config::getInstance().getSkin(), false, 0);
+            videoForm->setSerial(serial);
+
+            auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+            if (device) {
+                device->setUserData(static_cast<void*>(videoForm));
+                device->registerDeviceObserver(videoForm);
+            }
+
+            videoForm->showFPS(false);
+            if (stayOnTop) {
+                videoForm->staysOnTop(true);
+            }
+
+            QString title = winTitle;
+            if (title.isEmpty()) {
+                title = QStringLiteral("QtScrcpy - ") + serial;
+            }
+            videoForm->setWindowTitle(title);
+            videoForm->updateShowSize(size);
+
+            if (winW > 0 && winH > 0) {
+                videoForm->resize(winW, winH);
+                videoForm->setGeometry(winX, winY, winW, winH);
+            }
+
+#ifdef Q_OS_WIN32
+            QTimer::singleShot(100, videoForm, [videoForm]() {
+                if (videoForm) videoForm->show();
+            });
+#else
+            videoForm->show();
+#endif
+
+            if (role != "independent") {
+                GroupController::instance().addDevice(serial);
+            }
+        });
+
+        QObject::connect(&qsc::IDeviceManage::getInstance(), &qsc::IDeviceManage::deviceDisconnected,
+                &a, [cliSerial](const QString &serial) {
+            if (serial == cliSerial) {
+                GroupController::instance().removeDevice(serial);
+                auto device = qsc::IDeviceManage::getInstance().getDevice(serial);
+                if (device) {
+                    auto data = device->getUserData();
+                    device->setUserData(nullptr);
+                    if (data) {
+                        auto form = static_cast<VideoForm*>(data);
+                        form->close();
+                        delete form;
+                    }
+                }
+                qInfo() << "[CLI] Device disconnected, quitting:" << serial;
+                qApp->quit();
+            }
+        });
+
+        qsc::DeviceParams params;
+        params.serial = cliSerial;
+        params.maxSize = parser.value(maxSizeOpt).toUShort();
+        params.bitRate = parser.value(bitRateOpt).toUInt();
+        params.maxFps = parser.value(maxFpsOpt).toUInt();
+        params.closeScreen = parser.isSet(closeScreenOpt);
+        params.useReverse = !parser.isSet(noReverseOpt);
+        params.display = true;
+        params.renderExpiredFrames = Config::getInstance().getRenderExpiredFrames();
+        params.stayAwake = true;
+        params.serverLocalPath = serverLocalPath;
+        params.serverRemotePath = Config::getInstance().getServerPath();
+        params.pushFilePath = Config::getInstance().getPushFilePath();
+        params.logLevel = Config::getInstance().getLogLevel();
+        params.codecOptions = Config::getInstance().getCodecOptions();
+        params.codecName = Config::getInstance().getCodecName();
+        params.scid = QRandomGenerator::global()->bounded(1, 10000) & 0x7FFFFFFF;
+        params.decodeMode = 0;
+
+        qsc::IDeviceManage::getInstance().connectDevice(params);
+    } else {
+        g_mainDlg = new Dialog {};
+        g_mainDlg->show();
+        QObject::connect(&singleInstance, &SingleInstance::activateRequested, g_mainDlg, &Dialog::bringToFront);
+    }
 
     qInfo() << QObject::tr("This software is completely open source and free. Use it at your own risk. You can download it at the "
             "following address:");
     qInfo() << QString("QtScrcpy %1 <https://github.com/barry-ran/QtScrcpy>").arg(QCoreApplication::applicationVersion());
 
-    qInfo() << QObject::tr("If you need more professional batch control mirror software, you can try the following software:");
-    qInfo() << QString(QObject::tr("QuickMirror") + " <https://lrbnfell4p.feishu.cn/drive/folder/KviYfz5uFlpUT8dXgdjccmfUnse>");
-
-    qInfo() << QObject::tr("If you need more professional game keymap mirror software, you can try the following software:");
-    qInfo() << QString(QObject::tr("QuickAssistant") + " <https://lrbnfell4p.feishu.cn/drive/folder/Hqckfxj5el1Wjpd9uezcX71lnBh>");
-
-    qInfo() << QObject::tr("If you need more professional PC remote software, you can try the following software:");
-    qInfo() << QString(QObject::tr("QuickDesk") + " <https://github.com/barry-ran/QuickDesk>");
-
-    qInfo() << QObject::tr("You can contact me with telegram <https://t.me/+Ylf_5V_rDCMyODQ1>");
-
     int ret = a.exec();
-    delete g_mainDlg;
+    if (g_mainDlg) {
+        delete g_mainDlg;
+        g_mainDlg = Q_NULLPTR;
+    }
 
 #if defined(Q_OS_WIN32) || defined(Q_OS_MACOS)
     MouseTap::getInstance()->quitMouseEventTap();
