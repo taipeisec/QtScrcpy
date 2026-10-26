@@ -141,6 +141,7 @@ int main(int argc, char *argv[])
     QCommandLineOption noReverseOpt("no-reverse", "Do not use adb reverse");
     QCommandLineOption closeScreenOpt("close-screen", "Close device screen when mirroring");
     QCommandLineOption stayAwakeOpt("stay-awake", "Keep device screen awake");
+    QCommandLineOption portOpt("port", "Local listening port for tunnel", "port", "0");
 
     parser.addOption(serialOpt);
     parser.addOption(titleOpt);
@@ -157,22 +158,20 @@ int main(int argc, char *argv[])
     parser.addOption(noReverseOpt);
     parser.addOption(closeScreenOpt);
     parser.addOption(stayAwakeOpt);
+    parser.addOption(portOpt);
 
     parser.process(a);
 
     const QString cliSerial = parser.value(serialOpt).trimmed();
     const bool isCli = !cliSerial.isEmpty();
 
-    // Isolated single instance per serial in CLI mode, or global in GUI mode
-    QString instanceKey = QStringLiteral("QtScrcpy");
-    if (isCli) {
-        instanceKey += QStringLiteral("_") + cliSerial;
-    }
-
-    SingleInstance singleInstance(instanceKey);
-    if (!singleInstance.isPrimary()) {
-        singleInstance.notifyPrimary();
-        return 0;
+    SingleInstance *singleInstance = nullptr;
+    if (!isCli) {
+        singleInstance = new SingleInstance(QStringLiteral("QtScrcpy"), &a);
+        if (!singleInstance->isPrimary()) {
+            singleInstance->notifyPrimary();
+            return 0;
+        }
     }
 
     // Set application icon for Linux (taskbar icon)
@@ -326,11 +325,18 @@ int main(int argc, char *argv[])
         params.scid = QRandomGenerator::global()->bounded(1, 10000) & 0x7FFFFFFF;
         params.decodeMode = 0;
 
+        quint16 cliPort = parser.value(portOpt).toUShort();
+        if (cliPort > 0) {
+            params.localPort = cliPort;
+        }
+
         qsc::IDeviceManage::getInstance().connectDevice(params);
     } else {
         g_mainDlg = new Dialog {};
         g_mainDlg->show();
-        QObject::connect(&singleInstance, &SingleInstance::activateRequested, g_mainDlg, &Dialog::bringToFront);
+        if (singleInstance) {
+            QObject::connect(singleInstance, &SingleInstance::activateRequested, g_mainDlg, &Dialog::bringToFront);
+        }
     }
 
     qInfo() << QObject::tr("This software is completely open source and free. Use it at your own risk. You can download it at the "
